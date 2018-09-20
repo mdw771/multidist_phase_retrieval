@@ -4,6 +4,7 @@ from pyfftw.interfaces.numpy_fft import fft2, ifft2
 from pyfftw.interfaces.numpy_fft import fftshift as np_fftshift
 from pyfftw.interfaces.numpy_fft import ifftshift as np_ifftshift
 import tensorflow as tf
+from skimage.transform import resize
 
 PI = 3.1415927
 
@@ -184,6 +185,29 @@ def get_gaussian_kernel(size, sigma):
     kernel = np.exp(-(xx ** 2 + yy ** 2) / (2 * sigma ** 2))
     kernel /= np.sum(kernel)
     return kernel.astype('float32')
+
+
+def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm):
+    z_d_cm = np.array(z_d_cm)
+    z_s_cm = source_to_det_dist_cm - z_d_cm
+    d_para_cm = z_s_cm * z_d_cm / source_to_det_dist_cm
+    mag = source_to_det_dist_cm / z_s_cm
+
+    # unify zooming of all images to the one with largest magnification
+    mag_norm = mag / mag.max()
+    ind_ref = np.argmax(mag_norm)
+    shape_ref = data[ind_ref].shape
+    shape_ref_half = (np.array(shape_ref) / 2).astype('int')
+    for i, img in enumerate(data):
+        if i != ind_ref:
+            zoom = 1. / mag_norm[i]
+            img = resize(img, (np.array(img.shape) * zoom).astype('int'))
+            center = (np.array(img.shape) / 2).astype('int')
+            img = img[center[0] - shape_ref_half[0]:center[0] - shape_ref_half[0] + shape_ref[0],
+                      center[1] - shape_ref_half[1]:center[1] - shape_ref_half[1] + shape_ref[1]]
+            data[i] = img
+    return data, d_para_cm
+
 
 if __name__ == '__main__':
 

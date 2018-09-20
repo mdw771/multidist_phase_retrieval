@@ -9,17 +9,14 @@ import time
 from util import *
 
 
-def retrieve_phase_near_field(src_fname_root, save_path, energy_ev, dist_cm_ls, psize_cm,
+def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
                               output_fname=None, pad_length=18, n_epoch=100, learning_rate=0.001,
                               gamma=1.):
 
-    prj_np_ls = []
-    for i in dist_cm_ls:
-        prj_np = dxchange.read_tiff(src_fname_root + '_{}.tiff'.format(i))
-        prj_np_ls.append(prj_np)
-    prj_np_ls = np.array(prj_np_ls)
+    prj_np_ls = data
+
     if output_fname is None:
-        output_fname = os.path.basename(src_fname_root + '_recon')
+        output_fname = 'recon'
 
     # take modulus and inverse shift
     prj_np_ls = np.sqrt(prj_np_ls)
@@ -36,8 +33,8 @@ def retrieve_phase_near_field(src_fname_root, save_path, energy_ev, dist_cm_ls, 
     obj_init[:, :, 1] = prj_back.imag
 
 
-    # obj_init[:, :, 0] = np.random.normal(100, 10, prj_shape)
-    # obj_init[:, :, 1] = np.random.normal(100, 10, prj_shape)
+    obj_init[:, :, 0] = np.random.normal(0.7, 0.1, prj_shape)
+    obj_init[:, :, 1] = np.random.normal(0.8, 0.1, prj_shape)
 
 
 
@@ -60,8 +57,8 @@ def retrieve_phase_near_field(src_fname_root, save_path, energy_ev, dist_cm_ls, 
     for i, dist_cm in enumerate(dist_cm_ls):
         det = fresnel_propagate(obj_real_pad, obj_imag_pad, energy_ev, psize_cm, dist_cm)
         # remove padded margins
-        det = det[center[0] - half_probe_size[0]:center[0] - half_probe_size[0] + prj_np.shape[0],
-                  center[1] - half_probe_size[1]:center[1] - half_probe_size[1] + prj_np.shape[1]]
+        det = det[center[0] - half_probe_size[0]:center[0] - half_probe_size[0] + prj_np_ls[0].shape[0],
+                  center[1] - half_probe_size[1]:center[1] - half_probe_size[1] + prj_np_ls[0].shape[1]]
         loss += tf.reduce_mean(tf.squared_difference(tf.abs(det), prj_ls[i], name='loss'))
     loss /= len(dist_cm_ls)
 
@@ -146,9 +143,25 @@ if __name__ == '__main__':
                         'dist_cm_ls': [40, 60, 80, 100],
                         'gamma': 1}
 
-    params = params_cameraman
+    params_brain = {'save_path': 'data/vincent/test',
+                    'output_fname': None,
+                    'pad_length': 18,
+                    'n_epoch': 50,
+                    'learning_rate': 0.01,
+                    'energy_ev': 17500,
+                    'psize_cm': 0.1e-4,
+                    'dist_cm_ls': [47.4848, 47.3848, 46.9848, 45.9847],
+                    'gamma': 1}
 
-    retrieve_phase_near_field(src_fname_root=params['src_fname_root'],
+    params = params_brain
+
+    prj0 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_0.tiff'))
+    prj1 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_1.tiff'))
+    prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_2.tiff'))
+    prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_3.tiff'))
+    data = [prj0, prj1, prj2, prj3]
+
+    retrieve_phase_near_field(data=data,
                               save_path=params['save_path'],
                               energy_ev=params['energy_ev'],
                               dist_cm_ls=params['dist_cm_ls'],
