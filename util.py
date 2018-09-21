@@ -5,6 +5,8 @@ from pyfftw.interfaces.numpy_fft import fftshift as np_fftshift
 from pyfftw.interfaces.numpy_fft import ifftshift as np_ifftshift
 import tensorflow as tf
 from scipy.misc import imresize
+from skimage.feature import register_translation
+from scipy.ndimage import fourier_shift
 
 PI = 3.1415927
 
@@ -187,11 +189,25 @@ def get_gaussian_kernel(size, sigma):
     return kernel.astype('float32')
 
 
-def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm):
+def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm, psize=None):
     z_d_cm = np.array(z_d_cm)
     z_s_cm = source_to_det_dist_cm - z_d_cm
     d_para_cm = z_s_cm * z_d_cm / source_to_det_dist_cm
     mag = source_to_det_dist_cm / z_s_cm
+
+    if psize is not None:
+        psize_norm = np.array(psize) / np.min(psize)
+        ind_ref = np.argmin(psize)
+        shape_ref = data[ind_ref].shape
+        shape_ref_half = (np.array(shape_ref) / 2).astype('int')
+        for i, img in enumerate(data):
+            if i != ind_ref:
+                zoom = psize_norm[i]
+                img = imresize(img, zoom, interp='bilinear', mode='F')
+                center = (np.array(img.shape) / 2).astype('int')
+                img = img[center[0] - shape_ref_half[0]:center[0] - shape_ref_half[0] + shape_ref[0],
+                      center[1] - shape_ref_half[1]:center[1] - shape_ref_half[1] + shape_ref[1]]
+                data[i] = img
 
     # unify zooming of all images to the one with largest magnification
     mag_norm = mag / mag.max()
@@ -208,6 +224,60 @@ def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm):
                       center[1] - shape_ref_half[1]:center[1] - shape_ref_half[1] + shape_ref[1]]
             data[i] = img
     return np.array(data), d_para_cm
+
+
+def realign_image(arr, shift, angle=0):
+    """
+    Translate and rotate image via Fourier
+
+    Parameters
+    ----------
+    arr : ndarray
+        Image array.
+
+    shift: float
+        Mininum and maximum values to rescale data.
+
+    angle: float, optional
+        Mininum and maximum values to rescale data.
+
+    Returns
+    -------
+    ndarray
+        Output array.
+    """
+    # if both shifts are integers, do circular shift; otherwise perform Fourier shift.
+    if np.count_nonzero(np.abs(np.array(shift) - np.round(shift)) < 0.01) == 2:
+        temp = np.roll(arr, int(shift[0]), axis=0)
+        temp = np.roll(temp, int(shift[1]), axis=1)
+        temp = temp.astype('float32')
+    else:
+        temp = fourier_shift(np.fft.fftn(arr), shift)
+        temp = np.fft.ifftn(temp)
+        temp = np.abs(temp).astype('float32')
+    return temp
+
+
+def register_data(data, ref_ind=0):
+    ref = data[ref_ind]
+    for i, img in enumerate(data):
+        if i != ref_ind:
+            shift, _, _ = register_translation(img, ref, upsample_factor=100)
+            print(shift)
+            img = realign_image(img, shift)
+            data[i] = img
+    return data
+
+
+def shift_data(data, shifts, ref_ind=0):
+    for i, img in enumerate(data):
+        if i != ref_ind:
+            shift = shifts[i]
+            img = realign_image(img, shift)
+            data[i] = img
+    return data
+
+
 
 
 if __name__ == '__main__':

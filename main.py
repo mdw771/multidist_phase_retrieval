@@ -146,19 +146,19 @@ if __name__ == '__main__':
     params_brain = {'save_path': 'data/vincent/test',
                     'output_fname': None,
                     'pad_length': 18,
-                    'n_epoch': 50,
+                    'n_epoch': 30,
                     'learning_rate': 0.01,
                     'energy_ev': 17500,
-                    'psize_cm': 0.1e-4,
-                    'dist_cm_ls': [47.4848, 47.3848, 46.9848, 45.9847],
+                    'psize_cm': 99.8e-7,
+                    'dist_cm_ls': [41.7, 41.6, 41.32, 40.6],
                     'gamma': 1}
 
     params = params_brain
 
-    prj0 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_0.tiff'))
-    prj1 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_1.tiff'))
-    prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_2.tiff'))
-    prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/proj_3.tiff'))
+    prj0 = np.squeeze(dxchange.read_tiff('data/vincent/test/converted/converted_00000.tiff'))
+    prj1 = np.squeeze(dxchange.read_tiff('data/vincent/test/converted/converted_00001.tiff'))
+    prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/converted/converted_00002.tiff'))
+    prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/converted/converted_00003.tiff'))
     data = [prj0, prj1, prj2, prj3]
 
     retrieve_phase_near_field(data=data,
