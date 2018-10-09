@@ -189,11 +189,12 @@ def get_gaussian_kernel(size, sigma):
     return kernel.astype('float32')
 
 
-def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm, psize=None):
+def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm, psize=None, crop=False):
     z_d_cm = np.array(z_d_cm)
     z_s_cm = source_to_det_dist_cm - z_d_cm
     d_para_cm = z_s_cm * z_d_cm / source_to_det_dist_cm
     mag = source_to_det_dist_cm / z_s_cm
+    new_data = []
 
     if psize is not None:
         psize_norm = np.array(psize) / np.min(psize)
@@ -204,26 +205,28 @@ def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm, psize=None):
             if i != ind_ref:
                 zoom = psize_norm[i]
                 img = imresize(img, zoom, interp='bilinear', mode='F')
-                center = (np.array(img.shape) / 2).astype('int')
-                img = img[center[0] - shape_ref_half[0]:center[0] - shape_ref_half[0] + shape_ref[0],
-                      center[1] - shape_ref_half[1]:center[1] - shape_ref_half[1] + shape_ref[1]]
-                data[i] = img
-
-    # unify zooming of all images to the one with largest magnification
-    mag_norm = mag / mag.max()
-    print(mag_norm)
-    ind_ref = np.argmax(mag_norm)
-    shape_ref = data[ind_ref].shape
-    shape_ref_half = (np.array(shape_ref) / 2).astype('int')
-    for i, img in enumerate(data):
-        if i != ind_ref:
-            zoom = 1. / mag_norm[i]
-            img = imresize(img, zoom, interp='bilinear', mode='F')
-            center = (np.array(img.shape) / 2).astype('int')
-            img = img[center[0] - shape_ref_half[0]:center[0] - shape_ref_half[0] + shape_ref[0],
-                      center[1] - shape_ref_half[1]:center[1] - shape_ref_half[1] + shape_ref[1]]
-            data[i] = img
-    return np.array(data), d_para_cm
+                if crop:
+                    center = (np.array(img.shape) / 2).astype('int')
+                    img = img[center[0] - shape_ref_half[0]:center[0] - shape_ref_half[0] + shape_ref[0],
+                          center[1] - shape_ref_half[1]:center[1] - shape_ref_half[1] + shape_ref[1]]
+            new_data.append(img)
+    else:
+        # unify zooming of all images to the one with largest magnification
+        mag_norm = mag / mag.max()
+        print(mag_norm)
+        ind_ref = np.argmax(mag_norm)
+        shape_ref = data[ind_ref].shape
+        shape_ref_half = (np.array(shape_ref) / 2).astype('int')
+        for i, img in enumerate(data):
+            if i != ind_ref:
+                zoom = 1. / mag_norm[i]
+                img = imresize(img, zoom, interp='bilinear', mode='F')
+                if crop:
+                    center = (np.array(img.shape) / 2).astype('int')
+                    img = img[center[0] - shape_ref_half[0]:center[0] - shape_ref_half[0] + shape_ref[0],
+                              center[1] - shape_ref_half[1]:center[1] - shape_ref_half[1] + shape_ref[1]]
+            new_data.append(img)
+    return new_data, d_para_cm
 
 
 def realign_image(arr, shift, angle=0):
@@ -278,6 +281,44 @@ def shift_data(data, shifts, ref_ind=0):
     return data
 
 
+def fourier_shift_tf(arr, shift, image_shape):
+    wy = np.fft.fftfreq(image_shape[0])
+    wx = np.fft.fftfreq(image_shape[1])
+    wxx, wyy = np.meshgrid(wx, wy)
+    w = np.zeros([image_shape[0], image_shape[1], 2], dtype='float32')
+    w[:, :, 0] = wyy
+    w[:, :, 1] = wxx
+    k = tf.reduce_sum(tf.constant(w) * shift, axis=2)
+    k = tf.exp(-1j * 2 * PI * tf.cast(k, tf.complex64))
+    res = tf.ifft2d(tf.fft2d(tf.cast(arr, tf.complex64)) * k)
+    return tf.abs(res)
+
+
+def rescale_image(arr, m, original_shape):
+
+    arr_shape = tf.cast(arr.shape, tf.float32)
+    y_newlen = arr_shape[0] / m
+    x_newlen = arr_shape[1] / m
+    # tf.linspace shouldn't be used since it does not support gradient
+    y = tf.range(0, arr_shape[0], 1, dtype=tf.float32)
+    y = y / m + (original_shape[0] - y_newlen) / 2.
+    x = tf.range(0, arr_shape[1], 1, dtype=tf.float32)
+    x = x / m + (original_shape[1] - x_newlen) / 2.
+    # y = tf.linspace((original_shape[0] - y_newlen) / 2., (original_shape[0] + y_newlen) / 2. - 1, arr.shape[0])
+    # x = tf.linspace((original_shape[1] - x_newlen) / 2., (original_shape[1] + x_newlen) / 2. - 1, arr.shape[1])
+    y = tf.clip_by_value(y, 0, arr_shape[0])
+    x = tf.clip_by_value(x, 0, arr_shape[1])
+    x_resample, y_resample = tf.meshgrid(x, y)
+    warp = tf.transpose(tf.stack([y_resample, x_resample]))
+    # warp = tf.transpose(tf.stack([tf.reshape(y_resample, (np.prod(original_shape), )), tf.reshape(x_resample, (np.prod(original_shape), ))]))
+    # warp = tf.cast(warp, tf.int32)
+    # arr = arr * tf.reshape(warp[:, 0], original_shape)
+    # arr = tf.gather_nd(arr, warp)
+    warp = tf.expand_dims(warp, 0)
+    arr = tf.contrib.resampler.resampler(tf.reshape(arr, [1, original_shape[0], original_shape[1], 1]), warp)
+    arr = tf.reshape(arr, original_shape)
+
+    return arr
 
 
 if __name__ == '__main__':
