@@ -12,7 +12,7 @@ from util import *
 def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
                               output_fname=None, pad_length=18, n_epoch=100, learning_rate=0.001,
                               gamma=1., phase_limit=None, cpu_only=False, allow_shift=True,
-                              allow_scaling=True):
+                              allow_scaling=True, allow_intensity_scaling=True, registration_iter_limit=200):
 
     prj_np_ls = data
 
@@ -44,6 +44,10 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
         prj_scaling = tf.Variable(np.ones(len(dist_cm_ls)), dtype=tf.float32)
     else:
         prj_scaling = tf.ones(len(dist_cm_ls), tf.float32)
+    if allow_intensity_scaling:
+        prj_inten = tf.Variable(np.ones(len(dist_cm_ls)), dtype=tf.float32)
+    else:
+        prj_inten = tf.ones(len(dist_cm_ls), tf.float32)
 
     obj = tf.Variable(obj_init, dtype=tf.float32, name='obj')
     obj_real = tf.cast(obj[:, :, 0], dtype=tf.complex64)
@@ -70,8 +74,8 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
             this_prj = rescale_image(this_prj, m, prj_shape)
         if allow_shift:
             this_prj = fourier_shift_tf(this_prj, prj_shift[i], image_shape=prj_shape)
-
-
+        if allow_intensity_scaling:
+            this_prj = this_prj * prj_inten[i]
         loss += tf.reduce_mean(tf.squared_difference(tf.abs(det), this_prj, name='loss'))
     loss /= len(dist_cm_ls)
 
@@ -81,30 +85,42 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     optimizer = optimizer.minimize(loss, var_list=[obj])
     optimizer_ls = [optimizer]
     if allow_shift:
-        optimizer_shift = tf.train.AdamOptimizer(learning_rate=1.)
+        optimizer_shift = tf.train.AdamOptimizer(learning_rate=0.5)
         optimizer_shift = optimizer_shift.minimize(loss, var_list=[prj_shift])
         optimizer_ls.append(optimizer_shift)
     if allow_scaling:
-        optimizer_scaling = tf.train.AdamOptimizer(learning_rate=0.05)
+        optimizer_scaling = tf.train.AdamOptimizer(learning_rate=0.005)
         optimizer_scaling = optimizer_scaling.minimize(loss, var_list=[prj_scaling])
         optimizer_ls.append(optimizer_scaling)
+    if allow_intensity_scaling:
+        optimizer_inten = tf.train.AdamOptimizer(learning_rate=0.01)
+        optimizer_inten = optimizer_inten.minimize(loss, var_list=[prj_inten])
+        optimizer_ls.append(optimizer_inten)
 
     sess.run(tf.global_variables_initializer())
     loss_ls = []
 
     for i_epoch in range(n_epoch):
         t0 = time.time()
-        runres = sess.run([*optimizer_ls, loss, reg_term, prj_shift, prj_scaling])
-        current_loss =runres[len(optimizer_ls)]
-        current_reg =runres[len(optimizer_ls) + 1]
-        current_shift =runres[len(optimizer_ls) + 2]
-        current_scaling =runres[len(optimizer_ls) + 3]
+        if i_epoch < registration_iter_limit:
+            runres = sess.run([*optimizer_ls, loss, reg_term, prj_shift, prj_scaling, prj_inten, this_prj])
+            current_loss =runres[len(optimizer_ls)]
+            current_reg =runres[len(optimizer_ls) + 1]
+            current_shift =runres[len(optimizer_ls) + 2]
+            current_scaling =runres[len(optimizer_ls) + 3]
+            current_inten = runres[len(optimizer_ls) + 4]
+            transformed_prj = runres[-1]
+        else:
+            _, current_loss, current_reg, current_shift, current_scaling, current_inten, transformed_prj = sess.run([optimizer, loss, reg_term, prj_shift, prj_scaling, prj_inten, this_prj])
         loss_ls.append(current_loss)
+        # dxchange.write_tiff(transformed_prj, os.path.join(save_path, 'temp', 'trans_prj'), dtype='float32')
         print('Iteration {}: loss = {}, reg = {}, Δt = {} s.'.format(i_epoch, current_loss, current_reg, time.time() - t0))
         if allow_shift:
             print('Current shift: \n{}'.format(current_shift))
         if allow_scaling:
             print('Current scaling: \n{}'.format(current_scaling))
+        if allow_intensity_scaling:
+            print('Current intensity scaling: \n{}'.format(current_inten))
 
         if phase_limit:
             mag = tf.sqrt(obj_real ** 2 + obj_imag ** 2)
@@ -240,30 +256,44 @@ if __name__ == '__main__':
                         'dist_cm_ls': [40, 60, 80, 100],
                         'gamma': 1}
 
-    params_brain = {'save_path': 'data/vincent/test/bin',
-                    'output_fname': None,
-                    'pad_length': 18,
-                    'n_epoch': 500,
-                    'learning_rate': 0.01,
-                    'energy_ev': 17500,
-                    'psize_cm': 49.9e-7,
-                    # 'dist_cm_ls': [7.29, 7.36, 7.66],
-                    # 'dist_cm_ls': [7.291, 3.976],
-                    'dist_cm_ls': [11.04, 7.29, 3.97],
-                    'gamma': 1}
+    params_brain_scan2 = {'save_path': 'data/vincent/test/scan2',
+                          'output_fname': None,
+                          'pad_length': 18,
+                          'n_epoch': 400,
+                          'learning_rate': 0.01,
+                          'energy_ev': 17500,
+                          'psize_cm': 99.8e-7,
+                          'dist_cm_ls': [7.29, 7.36, 7.66, 8.28],
+                          # 'dist_cm_ls': [7.291, 3.976],
+                          # 'dist_cm_ls': [11.04, 7.29, 3.97],
+                          'gamma': 1}
 
-    params = params_brain
+    params_brain_comb = {'save_path': 'data/vincent/test/bin',
+                         'output_fname': None,
+                         'pad_length': 18,
+                         'n_epoch': 400,
+                         'learning_rate': 0.01,
+                         'energy_ev': 17500,
+                         'psize_cm': 49.9e-7,
+                         # 'psize_cm': 99.8e-7,
+                         # 'dist_cm_ls': [7.29, 7.36, 7.66, 8.28],
+                         # 'dist_cm_ls': [7.291, 3.976],
+                         'dist_cm_ls': [11.04, 7.29, 3.97],
+                         'gamma': 1}
 
-    prj0 = np.squeeze(dxchange.read_tiff('data/vincent/test/bin/registered/converted_00000.tiff'))
-    prj1 = np.squeeze(dxchange.read_tiff('data/vincent/test/bin/registered/converted_00001.tiff'))
-    prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/bin/registered/converted_00002.tiff'))
+    params = params_brain_scan2
+
+    prj0 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00000.tiff'))
+    prj1 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00001.tiff'))
+    prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00002.tiff'))
+    prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00003.tiff'))
     # prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/converted/converted_00003.tiff'))
     # prj0 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_40.tiff'))
     # prj1 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_60.tiff'))
     # prj2 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_80.tiff'))
     # prj3 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_100.tiff'))
 
-    data = [prj0, prj1, prj2]
+    data = [prj0, prj1, prj2, prj3]
     # data = [prj1, prj2]
 
     retrieve_phase_near_field(data=data,

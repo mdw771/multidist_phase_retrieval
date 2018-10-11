@@ -194,6 +194,7 @@ def convert_cone_to_parallel(data, source_to_det_dist_cm, z_d_cm, psize=None, cr
     z_s_cm = source_to_det_dist_cm - z_d_cm
     d_para_cm = z_s_cm * z_d_cm / source_to_det_dist_cm
     mag = source_to_det_dist_cm / z_s_cm
+    print(mag)
     new_data = []
 
     if psize is not None:
@@ -282,6 +283,7 @@ def shift_data(data, shifts, ref_ind=0):
 
 
 def fourier_shift_tf(arr, shift, image_shape):
+
     wy = np.fft.fftfreq(image_shape[0])
     wx = np.fft.fftfreq(image_shape[1])
     wxx, wyy = np.meshgrid(wx, wy)
@@ -308,14 +310,14 @@ def rescale_image(arr, m, original_shape):
     # x = tf.linspace((original_shape[1] - x_newlen) / 2., (original_shape[1] + x_newlen) / 2. - 1, arr.shape[1])
     y = tf.clip_by_value(y, 0, arr_shape[0])
     x = tf.clip_by_value(x, 0, arr_shape[1])
-    x_resample, y_resample = tf.meshgrid(x, y)
-    warp = tf.transpose(tf.stack([y_resample, x_resample]))
+    x_resample, y_resample = tf.meshgrid(x, y, indexing='ij')
+    warp = tf.transpose(tf.stack([x_resample, y_resample]))
     # warp = tf.transpose(tf.stack([tf.reshape(y_resample, (np.prod(original_shape), )), tf.reshape(x_resample, (np.prod(original_shape), ))]))
     # warp = tf.cast(warp, tf.int32)
     # arr = arr * tf.reshape(warp[:, 0], original_shape)
     # arr = tf.gather_nd(arr, warp)
     warp = tf.expand_dims(warp, 0)
-    arr = tf.contrib.resampler.resampler(tf.reshape(arr, [1, original_shape[0], original_shape[1], 1]), warp)
+    arr = tf.contrib.resampler.resampler(tf.expand_dims(tf.expand_dims(arr, 0), -1), warp)
     arr = tf.reshape(arr, original_shape)
 
     return arr
