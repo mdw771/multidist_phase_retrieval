@@ -7,6 +7,7 @@ import tensorflow as tf
 from scipy.misc import imresize
 from skimage.feature import register_translation
 from scipy.ndimage import fourier_shift
+from scipy.special import erf
 
 PI = 3.1415927
 
@@ -29,12 +30,16 @@ def get_kernel(dist_nm, lmbda_nm, voxel_nm, grid_shape):
     dist : float
         Propagation distance in cm.
     """
-    # k = 2 * PI / lmbda_nm
+    k = 2 * PI / lmbda_nm
     u_max = 1. / (2. * voxel_nm[0])
     v_max = 1. / (2. * voxel_nm[1])
     u, v = gen_mesh([v_max, u_max], grid_shape[0:2])
     # H = np.exp(1j * k * dist_nm * np.sqrt(1 - lmbda_nm**2 * (u**2 + v**2)))
-    H = np.exp(-1j * PI * lmbda_nm * dist_nm * (u ** 2 + v ** 2))
+    try:
+        H = np.exp(1j * k * dist_nm) * np.exp(-1j * PI * lmbda_nm * dist_nm * (u ** 2 + v ** 2))
+    except:
+        dist_nm = tf.cast(dist_nm, tf.complex64)
+        H = tf.exp(1j * k * dist_nm) * tf.exp(-1j * PI * lmbda_nm * dist_nm * (u ** 2 + v ** 2))
 
     return H
 
@@ -145,7 +150,8 @@ def fresnel_propagate(wavefront_real, wavefront_imag, energy_ev, psize_cm, dist_
     else:
         n = np.mean(wave_shape)
         z_crit_cm = (psize_cm * n) ** 2 / (lmbda_cm * n)
-        algorithm = 'TF' if dist_cm < z_crit_cm else 'IR'
+        # algorithm = 'TF' if dist_cm < z_crit_cm else 'IR'
+        algorithm = 'TF'
         if algorithm == 'TF':
             h = get_kernel(dist_nm, lmbda_nm, [psize_nm, psize_nm], wave_shape)
             h = tf.convert_to_tensor(h, dtype=tf.complex64)
@@ -321,6 +327,34 @@ def rescale_image(arr, m, original_shape):
     arr = tf.reshape(arr, original_shape)
 
     return arr
+
+
+def multidistance_ctf(prj_ls, dist_cm_ls, psize_cm, energy_kev, kappa=200, sigma_cut=0.01, alpha_1=1e-3, alpha_2=1e-16):
+
+    prj_ls = np.array(prj_ls)
+    dist_cm_ls = np.array(dist_cm_ls)
+    dist_nm_ls = dist_cm_ls * 1.e7
+    lmbda_nm = 1.24 / energy_kev
+    psize_nm = psize_cm * 1.e7
+    prj_shape = prj_ls.shape[1:]
+
+    u_max = 1. / (2. * psize_nm)
+    v_max = 1. / (2. * psize_nm)
+    u, v = gen_mesh([v_max, u_max], prj_shape)
+    xi_mesh = PI * lmbda_nm * (u ** 2 + v ** 2)
+    xi_ls = np.zeros([len(dist_cm_ls), *prj_shape])
+    for i in range(len(dist_cm_ls)):
+        xi_ls = xi_mesh * dist_nm_ls[i]
+
+    abs_nu = np.sqrt(u ** 2 + v ** 2)
+    nu_cut = 0.7 / np.sqrt(lmbda_nm * np.mean(dist_nm_ls))
+    f = 0.5 * (1 - erf((abs_nu - nu_cut) / sigma_cut))
+    alpha = alpha_1 * f + alpha_2 * (1 - f)
+    phase = np.sum(np_fftshift(fft2(prj_ls - 1, axes=(-2, -1)), axes=(-2, -1)) * (np.sin(xi_ls) + 1. / kappa * np.cos(xi_ls)), axis=0)
+    phase /= (np.sum(2 * (np.sin(xi_ls) + 1. / kappa * np.cos(xi_ls)) ** 2, axis=0) + alpha)
+    phase = ifft2(np_ifftshift(phase, axes=(-2, -1)), axes=(-2, -1))
+
+    return np.abs(phase)
 
 
 if __name__ == '__main__':

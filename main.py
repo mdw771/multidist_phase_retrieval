@@ -12,7 +12,8 @@ from util import *
 def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
                               output_fname=None, pad_length=18, n_epoch=100, learning_rate=0.001,
                               gamma=1., phase_limit=None, cpu_only=False, allow_shift=True,
-                              allow_scaling=True, allow_intensity_scaling=True, registration_iter_limit=200):
+                              allow_scaling=True, allow_intensity_scaling=True, allow_refine_distances=True,
+                              registration_iter_limit=200):
 
     prj_np_ls = data
 
@@ -24,10 +25,11 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     prj_shape = list(prj_np_ls.shape[1:])
 
     # get first estimation from direct backpropagation
+    n_dists = len(dist_cm_ls)
     prj_back = np.zeros(prj_shape, dtype='complex64')
     for i, dist_cm in enumerate(dist_cm_ls):
         prj_back += fresnel_propagate_numpy(prj_np_ls[i], energy_ev, psize_cm, -dist_cm)
-    prj_back /= len(dist_cm_ls)
+    prj_back /= n_dists
     obj_init = np.zeros(prj_shape + [2])
     obj_init[:, :, 0] = prj_back.real
     obj_init[:, :, 1] = prj_back.imag
@@ -37,17 +39,21 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     # obj_init[:, :, 1] = np.random.normal(0.8, 0.1, prj_shape)
 
     if allow_shift:
-        prj_shift = tf.Variable(np.zeros([len(dist_cm_ls), 2]), dtype=tf.float32)
+        prj_shift = tf.Variable(np.zeros([n_dists, 2]), dtype=tf.float32)
+        # prj_shift = tf.constant([[4.828, 0.466], [-0.560, -1.880], [-1.040, -3.100], [-6.229, 8.523]])
     else:
-        prj_shift = tf.zeros([len(dist_cm_ls), 2], dtype=tf.int32)
+        prj_shift = tf.zeros([n_dists, 2], dtype=tf.int32)
     if allow_scaling:
         prj_scaling = tf.Variable(np.ones(len(dist_cm_ls)), dtype=tf.float32)
+        # prj_scaling = tf.constant([ 1.00439858, 1.0057919, 1.00345397, 1.01061535])
     else:
-        prj_scaling = tf.ones(len(dist_cm_ls), tf.float32)
+        prj_scaling = tf.ones(n_dists, tf.float32)
     if allow_intensity_scaling:
-        prj_inten = tf.Variable(np.ones(len(dist_cm_ls)), dtype=tf.float32)
+        prj_inten = tf.Variable(np.ones(n_dists), dtype=tf.float32)
     else:
-        prj_inten = tf.ones(len(dist_cm_ls), tf.float32)
+        prj_inten = tf.ones(n_dists, tf.float32)
+    if allow_refine_distances:
+        dist_cm_ls = tf.Variable(dist_cm_ls)
 
     obj = tf.Variable(obj_init, dtype=tf.float32, name='obj')
     obj_real = tf.cast(obj[:, :, 0], dtype=tf.complex64)
@@ -63,7 +69,9 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
 
     loss = tf.constant(0, dtype=tf.float32)
     reg_term = tf.constant(0, dtype=tf.float32)
-    for i, dist_cm in enumerate(dist_cm_ls):
+    modified_prj_ls = [None] * n_dists
+    for i in range(n_dists):
+        dist_cm = dist_cm_ls[i]
         det = fresnel_propagate(obj_real_pad, obj_imag_pad, energy_ev, psize_cm, dist_cm)
         # remove padded margins
         det = det[center[0] - half_probe_size[0]:center[0] - half_probe_size[0] + prj_np_ls[0].shape[0],
@@ -76,8 +84,9 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
             this_prj = fourier_shift_tf(this_prj, prj_shift[i], image_shape=prj_shape)
         if allow_intensity_scaling:
             this_prj = this_prj * prj_inten[i]
+        modified_prj_ls[i] = this_prj
         loss += tf.reduce_mean(tf.squared_difference(tf.abs(det), this_prj, name='loss'))
-    loss /= len(dist_cm_ls)
+    loss /= n_dists
 
     sess = tf.Session()
 
@@ -96,6 +105,10 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
         optimizer_inten = tf.train.AdamOptimizer(learning_rate=0.01)
         optimizer_inten = optimizer_inten.minimize(loss, var_list=[prj_inten])
         optimizer_ls.append(optimizer_inten)
+    if allow_refine_distances:
+        optimizer_dist = tf.train.AdamOptimizer(learning_rate=0.005)
+        optimizer_dist = optimizer_dist.minimize(loss, var_list=[dist_cm_ls])
+        optimizer_ls.append(optimizer_dist)
 
     sess.run(tf.global_variables_initializer())
     loss_ls = []
@@ -103,15 +116,15 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     for i_epoch in range(n_epoch):
         t0 = time.time()
         if i_epoch < registration_iter_limit:
-            runres = sess.run([*optimizer_ls, loss, reg_term, prj_shift, prj_scaling, prj_inten, this_prj])
+            runres = sess.run([*optimizer_ls, loss, reg_term, prj_shift, prj_scaling, prj_inten, dist_cm_ls])
             current_loss =runres[len(optimizer_ls)]
             current_reg =runres[len(optimizer_ls) + 1]
             current_shift =runres[len(optimizer_ls) + 2]
             current_scaling =runres[len(optimizer_ls) + 3]
             current_inten = runres[len(optimizer_ls) + 4]
-            transformed_prj = runres[-1]
+            current_dist = runres[len(optimizer_ls) + 5]
         else:
-            _, current_loss, current_reg, current_shift, current_scaling, current_inten, transformed_prj = sess.run([optimizer, loss, reg_term, prj_shift, prj_scaling, prj_inten, this_prj])
+            _, current_loss, current_reg, current_shift, current_scaling, current_inten, transformed_prj = sess.run([optimizer, loss, reg_term, prj_shift, prj_scaling, prj_inten, dist_cm_ls])
         loss_ls.append(current_loss)
         # dxchange.write_tiff(transformed_prj, os.path.join(save_path, 'temp', 'trans_prj'), dtype='float32')
         print('Iteration {}: loss = {}, reg = {}, Δt = {} s.'.format(i_epoch, current_loss, current_reg, time.time() - t0))
@@ -121,6 +134,8 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
             print('Current scaling: \n{}'.format(current_scaling))
         if allow_intensity_scaling:
             print('Current intensity scaling: \n{}'.format(current_inten))
+        if allow_refine_distances:
+            print('Current refined distances: \n{}'.format(current_dist))
 
         if phase_limit:
             mag = tf.sqrt(obj_real ** 2 + obj_imag ** 2)
@@ -138,6 +153,9 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     det_final = sess.run(det)
     dxchange.write_tiff(np.angle(det_final), os.path.join(save_path, 'detector_phase'), dtype='float32', overwrite=True)
     dxchange.write_tiff(np.abs(det_final) ** 2, os.path.join(save_path, 'detector_mag'), dtype='float32', overwrite=True)
+
+    # prj_final_ls = sess.run(modified_prj_ls)
+    # dxchange.write_tiff(np.array(prj_final_ls), os.path.join(save_path, 'final_prj', 'prj'), dtype='float32')
 
     return
 
