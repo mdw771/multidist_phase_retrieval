@@ -3,6 +3,7 @@ from util import *
 import dxchange
 import os
 import tomopy
+import matplotlib.pyplot as plt
 
 
 energy_ev = 17500
@@ -15,11 +16,16 @@ prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/final_prj/prj_0000
 prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/final_prj/prj_00003.tiff'))
 data_ls = [prj0, prj1, prj2, prj3]
 
+dist_cm_ls = [7.29074313846154]
+data_ls = [prj0]
+
 # for i, prj in enumerate(data_ls):
 #     prj_back = tomopy.retrieve_phase(prj[np.newaxis, :, :], pixel_size=psize_cm_ls[i], dist=dist_cm_ls[i], energy=energy_ev * 1e-3, alpha=5e-3)
 #     # prj_back = fresnel_propagate_numpy(prj, energy_ev, psize_cm_ls[i], -dist_cm_ls[i])
 #     # prj_back = np.squeeze(prj_back)
 #     dxchange.write_tiff(np.abs(prj_back), os.path.join('data/vincent/test/scan2/paganin_5e-3', 'back_{}'.format(i)), dtype='float32', overwrite=True)
 
-phase = multidistance_ctf(data_ls, dist_cm_ls, psize_cm, energy_ev * 1e-3, kappa=200, alpha_1=10.)
+phase = multidistance_ctf(data_ls, dist_cm_ls, psize_cm, energy_ev * 1e-3)
+plt.imshow(phase)
+plt.show()
 dxchange.write_tiff(phase, os.path.join('data/vincent/test/scan2/ctf', 'ctf'), dtype='float32', overwrite=True)

@@ -329,7 +329,7 @@ def rescale_image(arr, m, original_shape):
     return arr
 
 
-def multidistance_ctf(prj_ls, dist_cm_ls, psize_cm, energy_kev, kappa=200, sigma_cut=0.01, alpha_1=1e-3, alpha_2=1e-16):
+def multidistance_ctf(prj_ls, dist_cm_ls, psize_cm, energy_kev, kappa=50, sigma_cut=0.01, alpha_1=5e-4, alpha_2=1e-16):
 
     prj_ls = np.array(prj_ls)
     dist_cm_ls = np.array(dist_cm_ls)
@@ -344,12 +344,16 @@ def multidistance_ctf(prj_ls, dist_cm_ls, psize_cm, energy_kev, kappa=200, sigma
     xi_mesh = PI * lmbda_nm * (u ** 2 + v ** 2)
     xi_ls = np.zeros([len(dist_cm_ls), *prj_shape])
     for i in range(len(dist_cm_ls)):
-        xi_ls = xi_mesh * dist_nm_ls[i]
+        xi_ls[i] = xi_mesh * dist_nm_ls[i]
 
     abs_nu = np.sqrt(u ** 2 + v ** 2)
-    nu_cut = 0.7 / np.sqrt(lmbda_nm * np.mean(dist_nm_ls))
+    nu_cut = 0.6 * u_max
     f = 0.5 * (1 - erf((abs_nu - nu_cut) / sigma_cut))
     alpha = alpha_1 * f + alpha_2 * (1 - f)
+    # plt.imshow(abs(np.log(np_fftshift(fft2(prj_ls[0] - 1, axes=(-2, -1)), axes=(-2, -1)))))
+    # plt.imshow(alpha)
+    # plt.show()
+    # alpha = 0
     phase = np.sum(np_fftshift(fft2(prj_ls - 1, axes=(-2, -1)), axes=(-2, -1)) * (np.sin(xi_ls) + 1. / kappa * np.cos(xi_ls)), axis=0)
     phase /= (np.sum(2 * (np.sin(xi_ls) + 1. / kappa * np.cos(xi_ls)) ** 2, axis=0) + alpha)
     phase = ifft2(np_ifftshift(phase, axes=(-2, -1)), axes=(-2, -1))
