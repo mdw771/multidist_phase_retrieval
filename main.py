@@ -11,9 +11,9 @@ from util import *
 
 def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
                               output_fname=None, pad_length=18, n_epoch=100, learning_rate=0.001,
-                              gamma=1., phase_limit=None, cpu_only=False, allow_shift=True,
-                              allow_scaling=True, allow_intensity_scaling=True, allow_refine_distances=True,
-                              registration_iter_limit=200):
+                              gamma=1., phase_limit=None, cpu_only=False, allow_shift=False,
+                              allow_scaling=False, allow_intensity_scaling=False, allow_refine_distances=True,
+                              registration_iter_limit=200, fin_sup_mask=None):
 
     prj_np_ls = data
 
@@ -35,8 +35,8 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     obj_init[:, :, 1] = prj_back.imag
 
 
-    # obj_init[:, :, 0] = np.random.normal(0.7, 0.1, prj_shape)
-    # obj_init[:, :, 1] = np.random.normal(0.8, 0.1, prj_shape)
+    obj_init[:, :, 0] = np.random.normal(0.7, 0.1, prj_shape)
+    obj_init[:, :, 1] = np.random.normal(0.8, 0.1, prj_shape)
 
     if allow_shift:
         prj_shift = tf.Variable(np.zeros([n_dists, 2]), dtype=tf.float32)
@@ -55,14 +55,25 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     if allow_refine_distances:
         dist_cm_ls = tf.Variable(dist_cm_ls)
 
-    obj = tf.Variable(obj_init, dtype=tf.float32, name='obj')
-    obj_real = tf.cast(obj[:, :, 0], dtype=tf.complex64)
-    obj_imag = tf.cast(obj[:, :, 1], dtype=tf.complex64)
+    if fin_sup_mask is not None:
+        # fin_sup_mask = fin_sup_mask[:, :, np.newaxis]
+        # fin_sup_mask = np.tile(fin_sup_mask, [1, 1, 2])
+        fin_sup_mask = tf.constant(fin_sup_mask, dtype=tf.float32)
+
+    obj_real = tf.Variable(obj_init[:, :, 0], dtype=tf.float32, name='obj')
+    obj_imag = tf.Variable(obj_init[:, :, 1], dtype=tf.float32, name='obj')
+    if fin_sup_mask is not None:
+        obj_real_masked = (obj_real - 1.) * fin_sup_mask + 1.
+        obj_imag_masked = obj_imag * fin_sup_mask
+    else:
+        obj_real_masked = obj_real
+        obj_imag_masked = obj_imag
+    obj_real_complex = tf.cast(obj_real_masked, dtype=tf.complex64)
+    obj_imag_complex = tf.cast(obj_imag_masked, dtype=tf.complex64)
     prj_ls = tf.constant(prj_np_ls, name='prj')
 
-    obj_pad = tf.pad(obj, [[pad_length, pad_length], [pad_length, pad_length], [0, 0]], mode='SYMMETRIC')
-    obj_real_pad = tf.cast(obj_pad[:, :, 0], dtype=tf.complex64)
-    obj_imag_pad = tf.cast(obj_pad[:, :, 1], dtype=tf.complex64)
+    obj_real_pad = tf.pad(obj_real_complex, [[pad_length, pad_length], [pad_length, pad_length]], mode='SYMMETRIC')
+    obj_imag_pad = tf.pad(obj_imag_complex, [[pad_length, pad_length], [pad_length, pad_length]], mode='SYMMETRIC')
 
     center = [int((x + 2 * pad_length) / 2) for x in prj_shape]
     half_probe_size = [int(x / 2) for x in prj_shape]
@@ -91,7 +102,7 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     sess = tf.Session()
 
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
-    optimizer = optimizer.minimize(loss, var_list=[obj])
+    optimizer = optimizer.minimize(loss, var_list=[obj_real, obj_imag])
     optimizer_ls = [optimizer]
     if allow_shift:
         optimizer_shift = tf.train.AdamOptimizer(learning_rate=0.5)
@@ -114,20 +125,29 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     loss_ls = []
 
     for i_epoch in range(n_epoch):
+        current_obj_real, current_obj_imag = sess.run([obj_real_complex, obj_imag_complex])
+        dxchange.write_tiff(np.abs(current_obj_real + 1j * current_obj_imag), 'data/vincent/test/scan2/test/mag/mag_before', dtype='float32')
+        dxchange.write_tiff(np.angle(current_obj_real + 1j * current_obj_imag), 'data/vincent/test/scan2/test/phase/phase_before', dtype='float32')
         t0 = time.time()
         if i_epoch < registration_iter_limit:
-            runres = sess.run([*optimizer_ls, loss, reg_term, prj_shift, prj_scaling, prj_inten, dist_cm_ls])
+            runres = sess.run([*optimizer_ls, loss, reg_term, prj_shift, prj_scaling, prj_inten, dist_cm_ls, det])
             current_loss =runres[len(optimizer_ls)]
             current_reg =runres[len(optimizer_ls) + 1]
             current_shift =runres[len(optimizer_ls) + 2]
             current_scaling =runres[len(optimizer_ls) + 3]
             current_inten = runres[len(optimizer_ls) + 4]
             current_dist = runres[len(optimizer_ls) + 5]
+            current_det = runres[len(optimizer_ls) + 6]
         else:
             _, current_loss, current_reg, current_shift, current_scaling, current_inten, transformed_prj = sess.run([optimizer, loss, reg_term, prj_shift, prj_scaling, prj_inten, dist_cm_ls])
         loss_ls.append(current_loss)
         # dxchange.write_tiff(transformed_prj, os.path.join(save_path, 'temp', 'trans_prj'), dtype='float32')
         print('Iteration {}: loss = {}, reg = {}, Δt = {} s.'.format(i_epoch, current_loss, current_reg, time.time() - t0))
+
+        current_obj_real, current_obj_imag = sess.run([obj_real, obj_imag])
+        dxchange.write_tiff(np.sqrt(current_obj_real ** 2 + current_obj_imag ** 2), 'data/vincent/test/scan2/test/mag/mag', dtype='float32')
+        dxchange.write_tiff(np.angle(current_obj_real + 1j * current_obj_imag), 'data/vincent/test/scan2/test/phase/phase', dtype='float32')
+        dxchange.write_tiff(current_det, 'data/vincent/test/scan2/test/det/det', dtype='float32')
         if allow_shift:
             print('Current shift: \n{}'.format(current_shift))
         if allow_scaling:
@@ -160,9 +180,9 @@ def retrieve_phase_near_field(data, save_path, energy_ev, dist_cm_ls, psize_cm,
     return
 
 
-def retrieve_phase_near_field_gabor(data, save_path, energy_ev, dist_cm_ls, psize_cm,
+def retrieve_phase_near_field_er(data, save_path, energy_ev, dist_cm_ls, psize_cm,
                                   output_fname=None, pad_length=18, n_epoch=100, learning_rate=0.001,
-                                  gamma=1., phase_limit=None, cpu_only=False):
+                                  gamma=1., phase_limit=None, cpu_only=False, fin_sup_mask=None):
 
     prj_np_ls = data
 
@@ -200,6 +220,10 @@ def retrieve_phase_near_field_gabor(data, save_path, energy_ev, dist_cm_ls, psiz
             wavefront = wavefront / np.abs(wavefront) * prj_np_ls[i_dist]
             wavefront = np.pad(wavefront, [[pad_length, pad_length], [pad_length, pad_length]], mode='symmetric')
             wavefront = fresnel_propagate_numpy(wavefront, energy_ev, psize_cm, -dist_cm)
+        if fin_sup_mask is not None:
+            valid_region = wavefront[pad_length:pad_length + prj_shape[0], pad_length:pad_length + prj_shape[1]]
+            valid_region = (np.real(valid_region) - 1) * fin_sup_mask + 1 + 1j * np.imag(valid_region) * fin_sup_mask
+            wavefront[pad_length:pad_length + prj_shape[0], pad_length:pad_length + prj_shape[1]] = valid_region
         loss = np.mean(loss)
         loss_ls.append(loss)
         print('Iteration {}: loss = {}, Δt = {} s.'.format(i_epoch, loss, time.time() - t0))
@@ -264,6 +288,8 @@ def retrieve_phase_far_field(src_fname, save_path, output_fname=None, pad_length
 
 if __name__ == '__main__':
 
+    fin_sup_mask_scan2 = dxchange.read_tiff('data/vincent/test/scan2/mask.tiff')
+
     params_cameraman = {'save_path': 'data/cameraman',
                         'output_fname': None,
                         'pad_length': 18,
@@ -272,19 +298,29 @@ if __name__ == '__main__':
                         'energy_ev': 17500.,
                         'psize_cm': 1e-4,
                         'dist_cm_ls': [40, 60, 80, 100],
-                        'gamma': 1}
+                        'fin_sup_mask': None,
+                        'gamma': 1,
+                        'allow_shift': True,
+                        'allow_scaling': True,
+                        'allow_intensity_scaling': True,
+                        'allow_refine_distances': True}
 
     params_brain_scan2 = {'save_path': 'data/vincent/test/scan2',
                           'output_fname': None,
                           'pad_length': 18,
-                          'n_epoch': 400,
+                          'n_epoch': 200,
                           'learning_rate': 0.01,
                           'energy_ev': 17500,
                           'psize_cm': 99.8e-7,
-                          'dist_cm_ls': [7.29, 7.36, 7.66, 8.28],
+                          'dist_cm_ls': [7.39, 7.46, 7.74, 8.39],
+                          'fin_sup_mask': fin_sup_mask_scan2,
                           # 'dist_cm_ls': [7.291, 3.976],
                           # 'dist_cm_ls': [11.04, 7.29, 3.97],
-                          'gamma': 1}
+                          'gamma': 1,
+                          'allow_shift': True,
+                          'allow_scaling': True,
+                          'allow_intensity_scaling': True,
+                          'allow_refine_distances': True}
 
     params_brain_comb = {'save_path': 'data/vincent/test/bin',
                          'output_fname': None,
@@ -297,22 +333,43 @@ if __name__ == '__main__':
                          # 'dist_cm_ls': [7.29, 7.36, 7.66, 8.28],
                          # 'dist_cm_ls': [7.291, 3.976],
                          'dist_cm_ls': [11.04, 7.29, 3.97],
-                         'gamma': 1}
+                         'fin_sup_mask': fin_sup_mask_scan2,
+                         'gamma': 1,
+                         'allow_shift': True,
+                         'allow_scaling': True,
+                         'allow_intensity_scaling': True,
+                         'allow_refine_distances': True}
 
-    params = params_brain_scan2
+    params_32id = {'save_path': 'data/32id',
+                   'output_fname': None,
+                   'pad_length': 18,
+                   'n_epoch': 400,
+                   'learning_rate': 0.01,
+                   'energy_ev': 25000,
+                   'psize_cm': 800e-7,
+                   'dist_cm_ls': [30.],
+                   'fin_sup_mask': None,
+                   'gamma': 1,
+                   'allow_shift': False,
+                   'allow_scaling': False,
+                   'allow_intensity_scaling': False,
+                   'allow_refine_distances': True}
 
-    prj0 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00000.tiff'))
-    prj1 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00001.tiff'))
-    prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00002.tiff'))
-    prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/converted/converted_00003.tiff'))
+    params = params_32id
+
+    # prj0 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/final_prj/prj_00000.tiff'))
+    # prj1 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/final_prj/prj_00001.tiff'))
+    # prj2 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/final_prj/prj_00002.tiff'))
+    # prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/scan2/final_prj/prj_00003.tiff'))
     # prj3 = np.squeeze(dxchange.read_tiff('data/vincent/test/converted/converted_00003.tiff'))
     # prj0 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_40.tiff'))
     # prj1 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_60.tiff'))
     # prj2 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_80.tiff'))
     # prj3 = np.squeeze(dxchange.read_tiff('data/cameraman/cameraman_512_dp_100.tiff'))
+    prj0 = np.squeeze(dxchange.read_tiff('data/32id/octopus.tiff'))
 
-    data = [prj0, prj1, prj2, prj3]
-    # data = [prj1, prj2]
+    # data = [prj0, prj1, prj2, prj3]
+    data = [prj0]
 
     retrieve_phase_near_field(data=data,
                               save_path=params['save_path'],
@@ -323,4 +380,9 @@ if __name__ == '__main__':
                               pad_length=params['pad_length'],
                               n_epoch=params['n_epoch'],
                               learning_rate=params['learning_rate'],
-                              gamma=params['gamma'])
+                              gamma=params['gamma'],
+                              fin_sup_mask=params['fin_sup_mask'],
+                              allow_shift=params['allow_shift'],
+                              allow_scaling=params['allow_scaling'],
+                              allow_intensity_scaling=params['allow_intensity_scaling'],
+                              allow_refine_distances=params['allow_refine_distances'])

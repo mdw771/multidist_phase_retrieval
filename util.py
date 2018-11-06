@@ -115,11 +115,11 @@ def ifftshift(tensor):
 
 
 def fresnel_propagate_numpy(wavefront, energy_ev, psize_cm, dist_cm):
+
     lmbda_nm = 1240. / energy_ev
     lmbda_cm = 0.000124 / energy_ev
     psize_nm = psize_cm * 1e7
     dist_nm = dist_cm * 1e7
-
     if dist_cm == 'inf':
         wavefront = np_fftshift(fft2(wavefront))
     else:
